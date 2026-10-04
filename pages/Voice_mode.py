@@ -193,7 +193,13 @@ if audio is not None:
             else:
                 with st.spinner("🤔 Thinking..."):
                     # same agent as the Study Assistant: document search / web search / direct reply
-                    answer, tool_used = query_rag(question)
+                    history = []
+                    for t in st.session_state.voice_chat[-4:]:
+                        history += [
+                            {"role": "user", "content": t["q"]},
+                            {"role": "assistant", "content": t["a"]},
+                        ]
+                    answer, tool_used = query_rag(question, history=history)
                 with st.spinner("🔊 Preparing voice..."):
                     spoken = to_spoken(answer, language)
                     voice = speak(spoken, lang_code)

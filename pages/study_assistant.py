@@ -99,7 +99,8 @@ if prompt:
 
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            answer, tool_used = query_rag(prompt)
+            # earlier messages (without the new question) so follow-ups like "the above matches" work
+            answer, tool_used = query_rag(prompt, history=st.session_state.messages[:-1])
             st.markdown(answer)
             st.markdown(f"<span class='tool-badge'>🔧 {tool_used}</span>", unsafe_allow_html=True)
 
