@@ -1,5 +1,5 @@
 import streamlit as st
-from groq import Groq
+from groq import Groq, RateLimitError
 import os, re, subprocess, tempfile
 from dotenv import load_dotenv
 from shared import voice_or_text
@@ -56,14 +56,18 @@ Error (if any): {error_input or "Not provided — find the bug yourself."}
 Explain the bug in 2-3 sentences, then give the complete corrected code in a single python code block.
 Format: explanation first, then exactly one ```python fenced code block with the full corrected code."""
 
-            response = groq_client.chat.completions.create(
-                model="qwen/qwen3.8-27b",
-                messages=[
-                    {"role": "system", "content": "You are an expert Python debugger. Be concise and precise."},
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=1200,
-            )
+            try:
+                response = groq_client.chat.completions.create(
+                    model="qwen/qwen3.8-27b",
+                    messages=[
+                        {"role": "system", "content": "You are an expert Python debugger. Be concise and precise."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=900,
+                )
+            except RateLimitError:
+                st.warning("⏳ The AI usage limit was reached. Please wait about a minute and click Debug It again.")
+                st.stop()
             reply = response.choices[0].message.content
 
             match = re.search(r"```python\s*(.*?)```", reply, re.DOTALL)
