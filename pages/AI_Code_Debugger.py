@@ -30,11 +30,19 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🐛 AI Code Debugger")
-st.caption("Paste code (and the error, if you have one) — get an explanation, a fix, and run it to verify")
+st.caption("Paste code in any language (and the error, if you have one). Get an explanation and a fix in the same language. Python code can also be run to verify.")
 
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-code_input = st.text_area("Your Python code", height=220, placeholder="Paste the code that's not working...")
+LANGUAGES = ["Auto-detect", "Python", "Java", "C", "C++", "C#", "JavaScript", "TypeScript", "Go", "PHP", "SQL"]
+# the tag the model writes after ``` is normalised so syntax highlighting and the Run button work
+LANG_ALIASES = {
+    "py": "python", "python3": "python", "c++": "cpp", "cc": "cpp", "c#": "csharp", "cs": "csharp",
+    "js": "javascript", "node": "javascript", "ts": "typescript", "golang": "go",
+}
+
+language = st.selectbox("Programming language", LANGUAGES)
+code_input = st.text_area("Your code", height=220, placeholder="Paste the code that's not working...")
 error_input = voice_or_text(
     "Error message (optional)", key="debugger", height=100,
     placeholder="Paste the traceback here, if you have one...",
@@ -45,22 +53,30 @@ if st.button("Debug It"):
         st.warning("Please paste some code first.")
     else:
         with st.spinner("Debugging..."):
-            prompt = f"""Here is Python code that has a problem:
+            if language == "Auto-detect":
+                lang_line = "Detect the programming language of the code yourself."
+                lang_name = "the same programming language as the code"
+            else:
+                lang_line = f"The code is written in {language}."
+                lang_name = language
 
-```python
+            prompt = f"""Here is code that has a problem. {lang_line}
+
+```
 {code_input}
 ```
 
 Error (if any): {error_input or "Not provided — find the bug yourself."}
 
-Explain the bug in 2-3 sentences, then give the complete corrected code in a single python code block.
-Format: explanation first, then exactly one ```python fenced code block with the full corrected code."""
+Explain the bug in 2-3 sentences, then give the complete corrected code in a single code block.
+Write the corrected code in {lang_name}. Never convert it to a different programming language.
+Format: explanation first, then exactly one fenced code block whose opening fence names the language (for example ```java), containing the full corrected code."""
 
             try:
                 response = groq_client.chat.completions.create(
                     model="qwen/qwen3.8-27b",
                     messages=[
-                        {"role": "system", "content": "You are an expert Python debugger. Be concise and precise."},
+                        {"role": "system", "content": "You are an expert software debugger who works in any programming language. Be concise and precise."},
                         {"role": "user", "content": prompt},
                     ],
                     max_tokens=900,
@@ -70,12 +86,20 @@ Format: explanation first, then exactly one ```python fenced code block with the
                 st.stop()
             reply = response.choices[0].message.content
 
-            match = re.search(r"```python\s*(.*?)```", reply, re.DOTALL)
-            fixed_code = match.group(1).strip() if match else None
+            match = re.search(r"```([A-Za-z0-9+#_-]*)[ \t]*\n(.*?)```", reply, re.DOTALL)
+            fixed_code = match.group(2).strip() if match else None
             explanation = reply[:match.start()].strip() if match else reply
+
+            # language of the fixed code: what the user chose, otherwise the tag the model wrote after ```
+            if language != "Auto-detect":
+                fixed_lang = language.lower()
+            else:
+                fixed_lang = (match.group(1) if match else "").strip().lower()
+            fixed_lang = LANG_ALIASES.get(fixed_lang, fixed_lang)
 
             st.session_state.debug_explanation = explanation
             st.session_state.debug_fixed_code = fixed_code
+            st.session_state.debug_fixed_lang = fixed_lang
 
 if "debug_explanation" in st.session_state:
     st.markdown("### 🔍 What's wrong")
@@ -83,10 +107,12 @@ if "debug_explanation" in st.session_state:
 
     if st.session_state.debug_fixed_code:
         st.markdown("### ✅ Fixed code")
-        st.code(st.session_state.debug_fixed_code, language="python")
+        st.code(st.session_state.debug_fixed_code, language=st.session_state.get("debug_fixed_lang") or None)
 
         if os.getenv("DEMO_MODE") == "1":
             st.info("▶️ Running code is turned off in the public demo for security. Run the app locally to use it.")
+        elif st.session_state.get("debug_fixed_lang") != "python":
+            st.info("▶️ Running is available for Python code only. Copy the fixed code and run it in your own setup.")
         elif st.button("▶️ Run fixed code to verify"):
             with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
                 f.write(st.session_state.debug_fixed_code)

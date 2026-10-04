@@ -70,6 +70,8 @@ groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 SYSTEM_PROMPT = (
     "You are an expert coding assistant. Write clean, well-commented code. "
+    "Always answer in the programming language of the user's code or the language they ask for. "
+    "Use Python only when no language is mentioned. Never switch to a different language on your own. "
     "Explain your solution briefly after the code block. "
     "You can see the earlier conversation. When the user says things like "
     "'explain that code', 'this code', 'fix it', or 'make it faster', "
