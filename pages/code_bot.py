@@ -112,7 +112,7 @@ if prompt:
             response = groq_client.chat.completions.create(
                 model="qwen/qwen3.8-27b",
                 messages=messages,
-                max_tokens=2000
+                max_tokens=900
             )
             answer = response.choices[0].message.content
             st.markdown(answer)
