@@ -133,7 +133,7 @@ Rules:
                         {"role": "system", "content": "You are a friendly teacher who explains topics in clear spoken language."},
                         {"role": "user", "content": prompt},
                     ],
-                    max_tokens=1200,
+                    max_tokens=900,
                 )
                 script = clean_script(response.choices[0].message.content)
 
