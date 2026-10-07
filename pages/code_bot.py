@@ -91,6 +91,14 @@ if st.session_state.code_messages:
         st.session_state.code_messages = []
         st.rerun()
 
+CONTINUE_PROMPT = (
+    "Continue the code exactly from where it stopped. "
+    "Put it in a new code block and do not repeat earlier code."
+)
+
+if "code_truncated" not in st.session_state:
+    st.session_state.code_truncated = False
+
 # Mic + typed input (mic stays at the top so the chat layout doesn't jump around)
 prompt = voice_or_text("Ask me to write, explain, or debug code...", key="codebot", is_chat=True)
 
@@ -98,7 +106,14 @@ for message in st.session_state.code_messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
+# Pazhaya response cut aagi irundha: warning + continue button
+if st.session_state.code_truncated and not prompt:
+    st.warning("⚠️ There is only half code is generated because of the token limit so plese click the continue button to get the remaining code.")
+    if st.button("➡️ Continue generating", key="continue_btn"):
+        prompt = CONTINUE_PROMPT
+
 if prompt:
+    st.session_state.code_truncated = False
     st.session_state.code_messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -109,12 +124,22 @@ if prompt:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
             messages += st.session_state.code_messages[-HISTORY_LIMIT:]
 
-            response = groq_client.chat.completions.create(
-                model="qwen/qwen3.8-27b",
-                messages=messages,
-                max_tokens=900
-            )
-            answer = response.choices[0].message.content
+            truncated = False
+            try:
+                response = groq_client.chat.completions.create(
+                    model="qwen/qwen3.8-27b",
+                    messages=messages,
+                    max_tokens=900
+                )
+                choice = response.choices[0]
+                answer = choice.message.content or ""
+
+                truncated = (choice.finish_reason == "length")
+            except Exception as e:
+                answer = f"⚠️ Error: {e}"
             st.markdown(answer)
 
     st.session_state.code_messages.append({"role": "assistant", "content": answer})
+    st.session_state.code_truncated = truncated
+    if truncated:
+        st.rerun()
