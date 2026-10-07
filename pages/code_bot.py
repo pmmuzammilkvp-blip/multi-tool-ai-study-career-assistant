@@ -91,55 +91,68 @@ if st.session_state.code_messages:
         st.session_state.code_messages = []
         st.rerun()
 
-CONTINUE_PROMPT = (
-    "Continue the code exactly from where it stopped. "
-    "Put it in a new code block and do not repeat earlier code."
+CONTINUE_INSTRUCTION = (
+    "Your previous answer was cut off by the length limit. "
+    "Continue it exactly from the last character, even mid-line. "
+    "Do not repeat anything and do not add an intro. "
+    "If you were inside a code block, keep going inside it without opening a new ``` fence."
 )
 
-if "code_truncated" not in st.session_state:
-    st.session_state.code_truncated = False
+
+def call_groq(history):
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + [
+        {"role": m["role"], "content": m["content"]} for m in history
+    ]
+    response = groq_client.chat.completions.create(
+        model="qwen/qwen3.8-27b",
+        messages=messages,
+        max_tokens=900
+    )
+    choice = response.choices[0]
+    return choice.message.content or "", choice.finish_reason
+
+
+def looks_cut(text, finish_reason):
+
+    return finish_reason == "length" or text.count("```") % 2 == 1
+
+
+msgs = st.session_state.code_messages
 
 # Mic + typed input (mic stays at the top so the chat layout doesn't jump around)
 prompt = voice_or_text("Ask me to write, explain, or debug code...", key="codebot", is_chat=True)
 
-for message in st.session_state.code_messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-# Pazhaya response cut aagi irundha: warning + continue button
-if st.session_state.code_truncated and not prompt:
-    st.warning("⚠️ There is only half code is generated because of the token limit so plese click the continue button to get the remaining code.")
-    if st.button("➡️ Continue generating", key="continue_btn"):
-        prompt = CONTINUE_PROMPT
 
 if prompt:
-    st.session_state.code_truncated = False
-    st.session_state.code_messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    if msgs:
+        msgs[-1]["cut"] = False
+    msgs.append({"role": "user", "content": prompt})
+    with st.spinner("Thinking..."):
+        try:
+            text, reason = call_groq(msgs[-HISTORY_LIMIT:])
+            msgs.append({"role": "assistant", "content": text, "cut": looks_cut(text, reason)})
+        except Exception as e:
+            msgs.append({"role": "assistant", "content": f"⚠️ Error: {e}", "cut": False})
 
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            # System prompt + recent chat history (includes the new prompt)
-            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-            messages += st.session_state.code_messages[-HISTORY_LIMIT:]
 
-            truncated = False
+for i, m in enumerate(msgs):
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
+        if m.get("cut") and i == len(msgs) - 1:
+            st.warning("⚠️ Code paadhi la nindruchu (response limit). Mela ulla code incomplete.")
+
+
+if msgs and msgs[-1].get("cut"):
+    if st.button("➡️ Continue generating", key="continue_btn"):
+        ok = True
+        with st.spinner("Continuing..."):
             try:
-                response = groq_client.chat.completions.create(
-                    model="qwen/qwen3.8-27b",
-                    messages=messages,
-                    max_tokens=900
-                )
-                choice = response.choices[0]
-                answer = choice.message.content or ""
-
-                truncated = (choice.finish_reason == "length")
+                history = msgs[-HISTORY_LIMIT:] + [{"role": "user", "content": CONTINUE_INSTRUCTION}]
+                text, reason = call_groq(history)
+                msgs[-1]["content"] += text
+                msgs[-1]["cut"] = looks_cut(msgs[-1]["content"], reason)
             except Exception as e:
-                answer = f"⚠️ Error: {e}"
-            st.markdown(answer)
-
-    st.session_state.code_messages.append({"role": "assistant", "content": answer})
-    st.session_state.code_truncated = truncated
-    if truncated:
-        st.rerun()
+                ok = False
+                st.error(f"⚠️ {e}")
+        if ok:
+            st.rerun()
