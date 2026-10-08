@@ -3,6 +3,7 @@ from groq import Groq
 import os
 from dotenv import load_dotenv
 from shared import voice_or_text
+import re
 
 load_dotenv()
 
@@ -91,30 +92,80 @@ if st.session_state.code_messages:
         st.session_state.code_messages = []
         st.rerun()
 
-CONTINUE_INSTRUCTION = (
-    "Your previous answer was cut off by the length limit. "
-    "Continue it exactly from the last character, even mid-line. "
-    "Do not repeat anything and do not add an intro. "
-    "If you were inside a code block, keep going inside it without opening a new ``` fence."
+CONTINUE_SYSTEM = (
+    "You continue an answer that was cut off by a length limit. "
+    "Output ONLY the raw text that comes immediately after the given ending. "
+    "Never repeat any earlier text, never restart from the beginning, never add an "
+    "introduction, explanation, apology or comment, and never open a new code fence."
 )
 
 
-def call_groq(history):
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + [
+def call_groq(history, system=None, temperature=None):
+    messages = [{"role": "system", "content": system or SYSTEM_PROMPT}] + [
         {"role": m["role"], "content": m["content"]} for m in history
     ]
+    kwargs = {}
+    if temperature is not None:
+        kwargs["temperature"] = temperature
     response = groq_client.chat.completions.create(
         model="qwen/qwen3.8-27b",
         messages=messages,
-        max_tokens=900
+        max_tokens=900,
+        **kwargs
     )
     choice = response.choices[0]
     return choice.message.content or "", choice.finish_reason
 
 
 def looks_cut(text, finish_reason):
-
+    # token limit ku cut aachu, illana code block open aagi close aagala
     return finish_reason == "length" or text.count("```") % 2 == 1
+
+
+def clean_continuation(existing, new):
+    """Continue part la irundhu extra fence, repeat aana text ellam remove pannum."""
+    # 1. Code block ulla irukkumbodhu pudhu opening fence vandha remove
+    if existing.count("```") % 2 == 1:
+        new = re.sub(r"^\s*```[a-zA-Z0-9_+\-]*[ \t]*\n", "", new, count=1)
+
+    # 2. Previous ending oda overlap irundha remove
+    max_k = min(len(existing), len(new), 600)
+    for k in range(max_k, 14, -1):
+        if existing.endswith(new[:k]):
+            return new[k:]
+
+    # 3. Model konjam munnaadi irundhu repeat pannirundha, repeat aana part ah remove
+    probe = new[:80]
+    if len(probe) >= 30:
+        idx = existing.rfind(probe)
+        if idx != -1:
+            overlap = len(existing) - idx
+            if existing[idx:] == new[:overlap]:
+                return new[overlap:]
+    return new
+
+
+def continue_last_answer(msgs):
+    partial = msgs[-1]["content"]
+    last_user = next((m["content"] for m in reversed(msgs) if m["role"] == "user"), "")
+    tail = partial[-400:]
+    history = [
+        {"role": "user", "content": last_user},
+        {"role": "assistant", "content": partial},
+        {"role": "user", "content": (
+            "Your answer above was cut off. Its last characters are:\n<<<\n"
+            f"{tail}\n>>>\n"
+            "Write ONLY what comes right after that text, as a raw continuation. "
+            "Do not repeat anything, no introduction, no new opening ``` fence. "
+            "When the code is complete, close it with ``` and stop."
+        )},
+    ]
+    text, reason = call_groq(history, system=CONTINUE_SYSTEM, temperature=0.2)
+    merged = partial + clean_continuation(partial, text)
+    # model fence close pannama nindrutha, nammale close pannidalaam
+    if reason != "length" and merged.count("```") % 2 == 1:
+        merged += "\n```"
+    return merged, reason
 
 
 msgs = st.session_state.code_messages
@@ -122,10 +173,10 @@ msgs = st.session_state.code_messages
 # Mic + typed input (mic stays at the top so the chat layout doesn't jump around)
 prompt = voice_or_text("Ask me to write, explain, or debug code...", key="codebot", is_chat=True)
 
-
+# 1. Pudhu prompt vandha, mudhal answer generate pannunga
 if prompt:
     if msgs:
-        msgs[-1]["cut"] = False
+        msgs[-1]["cut"] = False  # pazhaya warning remove
     msgs.append({"role": "user", "content": prompt})
     with st.spinner("Thinking..."):
         try:
@@ -134,23 +185,22 @@ if prompt:
         except Exception as e:
             msgs.append({"role": "assistant", "content": f"⚠️ Error: {e}", "cut": False})
 
-
+# 2. Chat history kaattunga (last message cut aana warning)
 for i, m in enumerate(msgs):
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
         if m.get("cut") and i == len(msgs) - 1:
-            st.warning("⚠️ Code paadhi la nindruchu (response limit). Mela ulla code incomplete.")
+            st.warning("⚠️ CThe Abouve code is incomplete because of rate limit so click the continue button to get the remaining code")
 
-
+# 3. Last message cut aana Continue button
 if msgs and msgs[-1].get("cut"):
     if st.button("➡️ Continue generating", key="continue_btn"):
         ok = True
         with st.spinner("Continuing..."):
             try:
-                history = msgs[-HISTORY_LIMIT:] + [{"role": "user", "content": CONTINUE_INSTRUCTION}]
-                text, reason = call_groq(history)
-                msgs[-1]["content"] += text
-                msgs[-1]["cut"] = looks_cut(msgs[-1]["content"], reason)
+                merged, reason = continue_last_answer(msgs)
+                msgs[-1]["content"] = merged
+                msgs[-1]["cut"] = looks_cut(merged, reason)
             except Exception as e:
                 ok = False
                 st.error(f"⚠️ {e}")

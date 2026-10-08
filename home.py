@@ -120,7 +120,7 @@ PAGE_KEYS = {
     "Resume Analyzer": "resumeanalyzer",
     "AI Code Debugger": "aicodedebugger",
     "Mock Interview": "mockinterview",
-    "Progress Dashboard": "progressdashboard",
+    "Progress Dashboard": "progressdashbord",
     "Agent Activity": "agentactivity",
 }
 
