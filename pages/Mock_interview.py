@@ -6,6 +6,8 @@ import os
 import re
 import json
 import time
+import random
+import difflib
 import tempfile
 from dotenv import load_dotenv
 from loaders import load_file
@@ -106,16 +108,18 @@ def parse_json(text, opener, closer):
     return json.loads(text[start:end + 1])
 
 
-def ask(system, prompt, max_tokens=MAX_OUT):
+def ask(system, prompt, max_tokens=MAX_OUT, temperature=None):
     # Groq's free plan allows only ~1000 output tokens per minute for this model,
     # so a single request can never ask for more than MAX_OUT.
     max_tokens = min(max_tokens, MAX_OUT)
     for attempt in range(3):
         try:
+            extra = {"temperature": temperature} if temperature is not None else {}
             resp = groq_client.chat.completions.create(
                 model=CHAT_MODEL,
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
                 max_tokens=max_tokens,
+                **extra,
             )
             return resp.choices[0].message.content
         except Exception as e:
@@ -138,59 +142,268 @@ def read_resume(uploaded):
         os.unlink(path)
 
 
+# ---------------- variety: questions should not repeat ----------------
+# only basic techniques; the scenario of every problem comes from the candidate's resume
+CODING_TOPICS = [
+    "arrays and lists", "strings", "hash maps and counting", "two pointers", "sliding window",
+    "stack", "queue", "sorting", "searching", "basic recursion", "sets and duplicates", "string parsing",
+]
+# ways of asking about something that is written in the resume (never about anything else)
+TECH_ANGLES = [
+    "the design choices and reasons behind one project from the resume",
+    "how the candidate would debug a problem in one of their resume projects",
+    "trade-offs of a tool or technology listed in the resume",
+    "the core concept behind one skill listed in the resume, explained simply",
+    "performance or optimisation of something the candidate built",
+    "testing and code quality in one of their projects",
+    "a realistic scenario: what would they do if something in a resume project breaks",
+    "the fundamentals of one skill listed in the resume",
+    "how two technologies listed in the resume work together",
+    "error handling or data handling in one of their projects",
+    "a basic concept in the candidate's own field that is closely related to their skills",
+]
+HR_ANGLES = [
+    "teamwork", "handling a disagreement", "dealing with a failure or mistake", "the candidate's biggest strength",
+    "a weakness and how they work on it", "career goals in five years", "why this role",
+    "working under a deadline", "learning something new quickly", "taking feedback",
+    "taking initiative or leadership", "handling stress", "what motivates the candidate",
+    "an honesty or ethics situation", "working with a difficult person",
+]
+SEEN_FILE = os.path.join("data", "mock_interview_seen.json")
+SEEN_LIMIT = 40  # remembered items per round
+
+
+def _demo_mode():
+    return os.getenv("DEMO_MODE") == "1"
+
+
+def _read_seen_file():
+    try:
+        with open(SEEN_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if isinstance(data, list):      # older version of this file: coding titles only
+        return {"coding": data}
+    return data if isinstance(data, dict) else {}
+
+
+def load_seen(round_key):
+    """Questions already given for this round. Kept per visitor session in the public demo,
+    and in a small file on your own computer."""
+    if _demo_mode():
+        return list(st.session_state.get("mi_seen", {}).get(round_key, []))
+    return list(_read_seen_file().get(round_key, []))
+
+
+def save_seen(round_key, items):
+    items = items[-SEEN_LIMIT:]
+    if _demo_mode():
+        store = dict(st.session_state.get("mi_seen", {}))
+        store[round_key] = items
+        st.session_state["mi_seen"] = store
+        return
+    try:
+        data = _read_seen_file()
+        data[round_key] = items
+        os.makedirs("data", exist_ok=True)
+        with open(SEEN_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def _norm(text):
+    return re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip()
+
+
+def _is_seen(text, seen):
+    """True if the text is the same as, or very close to, something already given."""
+    n = _norm(text)
+    for old in seen:
+        m = _norm(old)
+        if n == m or difflib.SequenceMatcher(None, n, m).ratio() >= 0.8:
+            return True
+    return False
+
+
+# Technologies that should only be asked about when the resume lists them.
+# Each group is a set of names for the same thing.
+TECH_GROUPS = [
+    ["full stack", "fullstack"], ["front end", "frontend"], ["back end", "backend"],
+    ["react", "reactjs", "react js"], ["angular"], ["vue", "vuejs"], ["node", "nodejs", "node js", "express"],
+    ["django"], ["flask"], ["fastapi"], ["spring", "spring boot"], ["java"], ["javascript", "js"],
+    ["typescript"], ["php"], ["c++", "cpp"], ["c#", "csharp", ".net", "dotnet"], ["kotlin"], ["swift"],
+    ["android"], ["ios"], ["docker"], ["kubernetes", "k8s"], ["aws", "amazon web services"], ["azure"],
+    ["gcp", "google cloud"], ["devops", "ci cd", "cicd", "jenkins"], ["terraform"], ["linux"],
+    ["networking", "tcp", "dns"], ["operating system", "operating systems"], ["blockchain"], ["unity"],
+    ["tensorflow"], ["pytorch"], ["opencv", "computer vision"], ["power bi", "powerbi"], ["tableau"],
+    ["excel"], ["mongodb", "mongo"], ["mysql"], ["postgresql", "postgres"], ["redis"], ["kafka"],
+    ["graphql"], ["microservices", "microservice"], ["machine learning"], ["deep learning"],
+    ["nlp", "natural language processing"], ["html", "css"], ["sql"], ["rest api", "restful"],
+]
+
+
+def _norm_text(text):
+    return re.sub(r"[-_/]+", " ", str(text).lower())
+
+
+def _has_term(text, term):
+    return re.search(r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])", text) is not None
+
+
+def _outside_resume_terms(text, resume_text, allowed=()):
+    """Technologies mentioned in `text` that are NOT in the resume (the chosen coding language is always allowed)."""
+    t, r = _norm_text(text), _norm_text(resume_text)
+    allowed = [a.lower() for a in allowed]
+    found = []
+    for group in TECH_GROUPS:
+        if any(g in allowed for g in group):
+            continue
+        if any(_has_term(t, g) for g in group) and not any(_has_term(r, g) for g in group):
+            found.append(group[0])
+    return found
+
+
+def _scope_note(terms):
+    return ("\n\nIMPORTANT: your earlier answer mentioned " + ", ".join(terms)
+            + ", which are NOT in the resume. Do not mention them. Stay inside the skills and field shown in the resume.")
+
+
+def _avoid_text(seen, what):
+    if not seen:
+        return ""
+    return f"\nDo NOT ask any of these {what} again, or close variants of them:\n" + "\n".join(
+        f"- {t}" for t in seen[-25:]
+    )
+
+
 def generate_round(round_key, resume_text, role, n, language, code_lang):
     """Returns a list of question items for one round."""
     role_line = f" for the role of {role}" if role else ""
     resume = resume_text[:4000]
     rule = LANG_RULES[language]
+    seen = load_seen(round_key)
+    nonce = random.randint(1000, 9999)
 
-    if round_key == "technical":
-        prompt = f"""You are a technical interviewer{role_line}. Read this resume and write {n} technical interview questions
-about the candidate's own skills, tools and projects. Order from easy to hard. Each question is one or two sentences, in {language}.
+    if round_key in ("technical", "hr"):
+        if round_key == "technical":
+            who = "technical interviewer"
+            kind = "technical"
+            angles = random.sample(TECH_ANGLES, k=min(n, len(TECH_ANGLES)))
+            extra = ("RULES: Ask about the skills, tools and projects in the resume, and about the core concepts "
+                     "and fundamentals behind them (for example, if the resume lists ChromaDB you may ask about "
+                     "embeddings and vector search). Stay inside the candidate's own field and level. "
+                     "Do NOT ask about any technology, language, framework or area that is not in the resume "
+                     "(for example, do not ask about full stack development, Java or DevOps unless the resume lists them). "
+                     "Use a different skill or project for each question. Order the questions from easy to hard.")
+        else:
+            who = "HR interviewer"
+            kind = "HR / behavioural"
+            angles = random.sample(HR_ANGLES, k=min(n, len(HR_ANGLES)))
+            extra = ("STRICT RULE: base every question on this candidate's resume. Refer to a real project, role, "
+                     "internship, course or achievement written in the resume whenever possible, and use a different "
+                     "one for each question. Do not invent facts about the candidate and do not mention technologies "
+                     "that are not in the resume.")
+        plan = "\n".join(f"- Question {i + 1}: {a}" for i, a in enumerate(angles))
+        prompt = f"""You are a {who}{role_line}. Read this resume and write {n} {kind} interview questions.
+Follow this plan, one question per line:
+{plan}
+{extra} Each question is one or two sentences, in {language}.{_avoid_text(seen, "questions")}
 {rule}
+Variation id: {nonce}
 
 RESUME:
 {resume}
 
 Return ONLY a valid JSON array of {n} strings."""
-        data = parse_json(ask("You write fair, clear interview questions. Output only valid JSON.", prompt), "[", "]")
-        return [{"round_key": "technical", "type": "text", "question": str(q).strip()} for q in data if str(q).strip()][:n]
+        system_text = "You write fair, clear, varied interview questions. Output only valid JSON."
 
-    if round_key == "hr":
-        prompt = f"""You are an HR interviewer{role_line}. Read this resume and write {n} HR / behavioural questions
-(teamwork, challenges, strengths and weaknesses, career goals, why this role). Make them relevant to this candidate.
-Each question is one or two sentences, in {language}.
-{rule}
+        def request(note=""):
+            data = parse_json(ask(system_text, prompt + note, temperature=0.9), "[", "]")
+            return [str(q).strip() for q in data if str(q).strip()]
 
-RESUME:
-{resume}
+        def usable(qs):
+            return [q for q in qs if not _is_seen(q, seen) and not _outside_resume_terms(q, resume_text)]
 
-Return ONLY a valid JSON array of {n} strings."""
-        data = parse_json(ask("You write fair, clear interview questions. Output only valid JSON.", prompt), "[", "]")
-        return [{"round_key": "hr", "type": "text", "question": str(q).strip()} for q in data if str(q).strip()][:n]
+        questions = request()
+        good = usable(questions)
+        if len(good) < n:
+            bad = sorted({t for q in questions for t in _outside_resume_terms(q, resume_text)})
+            if bad:                                  # ask once more, telling the model what to avoid
+                questions += request(_scope_note(bad))
+                good = usable(questions)
+        unique = []
+        for q in good:
+            if not _is_seen(q, unique):
+                unique.append(q)
+        in_scope = [q for q in questions if not _outside_resume_terms(q, resume_text)]
+        chosen = (unique or in_scope or questions)[:n]   # last fallbacks so the interview never fails
+        save_seen(round_key, seen + chosen)
+        return [{"round_key": round_key, "type": "text", "question": q} for q in chosen]
 
-    # coding round
+    # coding round: a random topic and difficulty for each problem
+    topics = random.sample(CODING_TOPICS, k=min(n, len(CODING_TOPICS)))
+    levels = [random.choice(["easy", "easy", "medium"]) for _ in range(n)]
+    plan = "\n".join(
+        f"- Problem {i + 1}: basic technique = {t}, difficulty = {lv}" for i, (t, lv) in enumerate(zip(topics, levels))
+    )
     prompt = f"""You are a coding interviewer{role_line}. Write {n} coding problem(s) for a candidate with this resume.
-Difficulty: easy to medium, a classic interview problem that can be solved in {code_lang} in under 25 lines.
+Follow this plan exactly, one problem per line:
+{plan}
+STRICT RULE: set every problem in a context close to the candidate's resume (for example, if the resume mentions
+data analysis, use a data-processing scenario) and use a different skill, project or domain for each problem.
+Do not mention technologies that are not in the resume. Keep the technique basic.
+If the resume shows no programming or technical background, write easy general problems.
+Each problem must be solvable in {code_lang} in under 25 lines and must be different from the others.
+Prefer a fresh scenario over the most common textbook examples (like FizzBuzz, Two Sum, palindrome check, reverse a string, factorial).{_avoid_text(seen, "problems")}
 Write the title, statement and example in {language}.
 {rule}
+Variation id: {nonce}
 
 RESUME:
 {resume}
 
 Return ONLY a valid JSON array of {n} objects in this exact format:
 [{{"title": "short title", "statement": "clear problem statement", "example": "Input: ...  Output: ..."}}]"""
-    data = parse_json(ask("You write clear coding interview problems. Output only valid JSON.", prompt, 2000), "[", "]")
-    items = []
-    for p in data:
-        if isinstance(p, dict) and p.get("statement"):
-            items.append({
-                "round_key": "coding", "type": "coding",
-                "title": str(p.get("title", "Coding problem")).strip(),
-                "question": str(p["statement"]).strip(),
-                "example": str(p.get("example", "")).strip(),
-            })
-    return items[:n]
+    system_text = "You write clear, original coding interview problems. Output only valid JSON."
+    allowed = [code_lang]
+
+    def request_items(note=""):
+        data = parse_json(ask(system_text, prompt + note, 2000, temperature=0.9), "[", "]")
+        out = []
+        for p in data:
+            if isinstance(p, dict) and p.get("statement"):
+                out.append({
+                    "round_key": "coding", "type": "coding",
+                    "title": str(p.get("title", "Coding problem")).strip(),
+                    "question": str(p["statement"]).strip(),
+                    "example": str(p.get("example", "")).strip(),
+                })
+        return out
+
+    def item_text(it):
+        return f"{it['title']} {it['question']} {it['example']}"
+
+    def usable_items(items):
+        return [it for it in items
+                if not _is_seen(it["title"], seen) and not _outside_resume_terms(item_text(it), resume_text, allowed)]
+
+    items = request_items()
+    good = usable_items(items)
+    if len(good) < n:
+        bad = sorted({t for it in items for t in _outside_resume_terms(item_text(it), resume_text, allowed)})
+        if bad:
+            items += request_items(_scope_note(bad))
+            good = usable_items(items)
+    unique = []
+    for it in good:
+        if not _is_seen(it["title"], [u["title"] for u in unique]):
+            unique.append(it)
+    in_scope = [it for it in items if not _outside_resume_terms(item_text(it), resume_text, allowed)]
+    chosen = (unique or in_scope or items)[:n]
+    save_seen("coding", seen + [it["title"] for it in chosen])
+    return chosen
 
 
 def _score(fb):
