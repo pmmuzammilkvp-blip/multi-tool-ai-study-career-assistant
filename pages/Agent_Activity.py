@@ -3,6 +3,10 @@ from shared import get_agent_stats
 
 st.set_page_config(page_title="Agent Activity", page_icon="🧭", layout="wide")
 
+from ui import inject_theme
+inject_theme()
+
+
 st.markdown("""
 <style>
     .block-container { padding-top: 2.5rem; max-width: 900px; }

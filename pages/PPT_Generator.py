@@ -9,6 +9,9 @@ load_dotenv()
 
 st.set_page_config(page_title="PPT Generator", page_icon="🎞️", layout="wide")
 
+from ui import inject_theme
+inject_theme()
+
 st.markdown("""
 <style>
     .block-container {

@@ -17,6 +17,9 @@ load_dotenv()
 
 st.set_page_config(page_title="Mock Interview", page_icon="🗣️", layout="wide")
 
+from ui import inject_theme
+inject_theme()
+
 st.markdown("""
 <style>
     .block-container { padding-top: 2.5rem; max-width: 900px; }

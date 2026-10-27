@@ -6,6 +6,9 @@ from shared import get_progress, clear_progress
 
 st.set_page_config(page_title="Progress Dashboard", page_icon="📊", layout="wide")
 
+from ui import inject_theme
+inject_theme()
+
 st.markdown("""
 <style>
     .block-container { padding-top: 2.5rem; max-width: 1000px; }

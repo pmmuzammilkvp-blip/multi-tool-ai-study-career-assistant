@@ -10,6 +10,9 @@ load_dotenv()
 
 st.set_page_config(page_title="Code Bot", page_icon="💻", layout="wide")
 
+from ui import inject_theme
+inject_theme()
+
 st.markdown("""
 <style>
     .block-container {
