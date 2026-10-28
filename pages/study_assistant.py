@@ -6,6 +6,8 @@ import uuid
 from shared import save_chat, list_chats, load_chat, delete_chat, voice_or_text
 
 st.set_page_config(page_title="Study Assistant", page_icon="📚", layout="wide")
+from ui import inject_theme
+inject_theme()
 
 st.markdown("""
 <style>
