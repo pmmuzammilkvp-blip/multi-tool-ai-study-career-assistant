@@ -141,6 +141,15 @@ def build_pack(topic, status_slot, steps_slot, note):
     return pack
 
 
+def as_list(data):
+    """Model sometimes wraps the list in a dict like {"questions": [...]}. Return a clean list of dicts."""
+    if isinstance(data, dict):
+        data = next((v for v in data.values() if isinstance(v, list)), [])
+    if not isinstance(data, list):
+        return []
+    return [d for d in data if isinstance(d, dict)]
+
+
 # ---------------- input ----------------
 topic = st.text_input("What do you want to study?", placeholder="e.g. Pandas DataFrame")
 st.caption("Tip: upload your notes in Study Assistant first, and the pack is built from your own documents.")
@@ -161,8 +170,8 @@ if pack:
     for err in pack.get("errors", []):
         st.warning(f"Could not build: {err}. Try again in a minute.")
 
-    flash = (pack.get("flashcards") or [])
-    quiz = (pack.get("quiz") or [])
+    flash = as_list(pack.get("flashcards"))
+    quiz = as_list(pack.get("quiz"))
     cols = st.columns(4)
     tiles = [("Your documents" if pack["used_docs"] else "General knowledge", "SOURCE"),
              (len(flash), "FLASHCARDS"), (len(quiz), "QUIZ QUESTIONS"),
@@ -175,7 +184,7 @@ if pack:
 
     with t1:
         s = pack.get("summary")
-        if s:
+        if isinstance(s, dict):
             a, b, c = st.columns(3)
             a.markdown(card("Big idea", s.get("big_idea", ""), "💡"), unsafe_allow_html=True)
             b.markdown(card("Key points", "", "🔑", s.get("key_points", [])), unsafe_allow_html=True)
@@ -183,8 +192,9 @@ if pack:
 
     with t2:
         m = pack.get("mindmap")
-        if m:
-            st.markdown(mindmap(m.get("center", pack["topic"]), m.get("branches", [])), unsafe_allow_html=True)
+        if isinstance(m, dict):
+            branches = [b for b in m.get("branches", []) if isinstance(b, dict)]
+            st.markdown(mindmap(m.get("center", pack["topic"]), branches), unsafe_allow_html=True)
 
     with t3:
         grid = st.columns(2)
